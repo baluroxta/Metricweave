@@ -4,6 +4,9 @@
   "private": true,
   "description": "From raw data to clear decisions. AI-powered dashboard generation and Power BI export platform.",
   "author": "Kandala Guru Balaji",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "postinstall": "prisma generate",
     "dev": "next dev",
