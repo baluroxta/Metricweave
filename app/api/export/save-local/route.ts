@@ -16,15 +16,43 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Invalid JSON request body" }, { status: 400 });
     }
 
-    const { projectId, openExplorer = true } = body;
+    const { projectId, projectName, projectData, openExplorer = true } = body;
 
-    if (!projectId) {
-      return NextResponse.json({ error: "Missing projectId" }, { status: 400 });
+    let project: any = null;
+    if (projectId) {
+      project = await getProject(projectId);
+    }
+    if (!project && projectName) {
+      project = await getProject(projectName);
+    }
+    if (!project && projectData?.dashboard && projectData?.dataset) {
+      project = {
+        name: projectData.name || projectName || "MetricWeave_Report",
+        dashboard: projectData.dashboard,
+        dataset: projectData.dataset,
+      };
     }
 
-    const project = await getProject(projectId);
     if (!project) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
+    }
+
+    const safeName = (project.name || "MetricWeave_Report")
+      .replace(/[^\w\s-]/g, "")
+      .trim()
+      .replace(/\s+/g, "_") || "MetricWeave_Report";
+
+    const isWindows = process.platform === "win32";
+    const isVercel = Boolean(process.env.VERCEL);
+
+    // If running in a cloud serverless environment, local PC file explorer cannot be opened remotely
+    if (isVercel || !isWindows) {
+      return NextResponse.json({
+        success: true,
+        isServerless: true,
+        message: "Cloud deployment active: Direct browser download will be triggered.",
+        safeName,
+      });
     }
 
     const exportResult = await createPowerBiZipBundle(
@@ -33,7 +61,6 @@ export async function POST(request: NextRequest) {
       project.dataset
     );
 
-    const safeName = project.name.replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "_") || "MetricWeave_Report";
     const homeDir = os.homedir();
     const downloadsDir = path.join(homeDir, "Downloads");
     const desktopDirs = [

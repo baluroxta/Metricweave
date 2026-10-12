@@ -1,11 +1,22 @@
 import JSZip from "jszip";
 import Papa from "papaparse";
-import { randomUUID } from "crypto";
 import { ParsedDataset, ColumnProfile } from "./data-profiler";
 import { GeneratedDashboard, VisualConfig } from "./templates";
 
+function getUuid(): string {
+  if (typeof globalThis !== "undefined" && globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 export interface PowerBiExportResult {
-  zipBuffer: Buffer;
+  zipBuffer: Uint8Array;
+  zipBlob?: Blob;
   fileName: string;
   pbipFileName: string;
   daxScript: string;
@@ -371,12 +382,12 @@ export function generateModelBim(
       tables: [
         {
           name: "Data",
-          lineageTag: randomUUID(),
+          lineageTag: getUuid(),
           columns: columns.map((col) => ({
             name: col.originalName,
             dataType: mapToPowerBiDataType(col.dataType),
             sourceColumn: col.originalName,
-            lineageTag: randomUUID(),
+            lineageTag: getUuid(),
             summarizeBy: col.role === "metric" ? "sum" : "none",
             isNullable: true,
           })),
@@ -394,7 +405,7 @@ export function generateModelBim(
             name: m.name,
             expression: m.expression,
             formatString: m.formatString,
-            lineageTag: randomUUID(),
+            lineageTag: getUuid(),
           })),
         },
       ],
@@ -831,10 +842,15 @@ If you prefer to import the data into an existing report or modify the queries m
   zip.file("README_POWER_BI.md", readmeContent);
 
 
-  const zipBuffer = await zip.generateAsync({ type: "nodebuffer" });
+  const uint8 = await zip.generateAsync({ type: "uint8array" });
+  let blob: Blob | undefined;
+  if (typeof Blob !== "undefined") {
+    blob = new Blob([uint8], { type: "application/zip" });
+  }
 
   return {
-    zipBuffer,
+    zipBuffer: uint8,
+    zipBlob: blob,
     fileName: `${safeName}_PowerBI_Project.zip`,
     pbipFileName: `${safeName}.pbip`,
     daxScript,

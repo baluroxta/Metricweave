@@ -23,11 +23,17 @@ export async function GET(
     else format = "zip";
   }
 
-  if (!projectId) {
-    return NextResponse.json({ error: "Missing projectId query parameter." }, { status: 400 });
+  let project: any = null;
+  if (projectId) {
+    project = await getProject(projectId);
+  }
+  if (!project && paramFilename) {
+    const cleanParam = paramFilename
+      .replace(/\.(zip|pbip|bim|dax|csv|m)$/i, "")
+      .replace(/_(model|measures|transform|dataset|PowerBI_Project)$/i, "");
+    project = await getProject(cleanParam);
   }
 
-  const project = await getProject(projectId);
   if (!project) {
     return NextResponse.json({ error: "Project not found." }, { status: 404 });
   }

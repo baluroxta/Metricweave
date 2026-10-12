@@ -142,4 +142,31 @@ describe("Microsoft Power BI Project (PBIP) Export", () => {
     const csvContent = await zip.file("data/dataset.csv")?.async("string");
     expect(csvContent).toContain("ORD-1001");
   });
+
+  it("resolves project by name and by sample ID in getProject", async () => {
+    const { getProject, saveProject } = await import("../lib/project-store");
+    
+    // Test resolving sample dataset by id or domain
+    const sampleProj = await getProject("sample-sales");
+    expect(sampleProj).not.toBeNull();
+    expect(sampleProj?.name).toContain("Sales");
+
+    // Test saving and resolving by project name
+    const saved = await saveProject({
+      name: "axivest_test_case",
+      fileName: "axivest_test_case.csv",
+      fileSize: 1000,
+      inferredDomain: "finance",
+      selectedTemplate: "executive",
+      dataset: parsed,
+      dashboard,
+    });
+    expect(saved.id).toBeDefined();
+
+    // Query by exact name
+    const foundByName = await getProject("axivest_test_case");
+    expect(foundByName).not.toBeNull();
+    expect(foundByName?.id).toBe(saved.id);
+  });
 });
+

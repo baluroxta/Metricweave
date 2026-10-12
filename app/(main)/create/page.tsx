@@ -364,6 +364,7 @@ export default function StudioPage() {
             projectId={project.id}
             projectName={project.name}
             dashboard={project.dashboard}
+            dataset={project.dataset}
             qualityReport={project.dataset.qualityReport}
             onUpdateDashboard={(updated) => setProject({ ...project, dashboard: updated })}
           />

@@ -38,12 +38,14 @@ import {
   Database,
 } from "lucide-react";
 import { GeneratedDashboard, VisualConfig } from "@/lib/templates";
-import { DataQualityReport } from "@/lib/data-profiler";
+import { DataQualityReport, ParsedDataset } from "@/lib/data-profiler";
+import { createPowerBiZipBundle } from "@/lib/powerbi-export";
 
 interface DashboardVisualizerProps {
   projectId: string;
   projectName: string;
   dashboard: GeneratedDashboard;
+  dataset?: ParsedDataset;
   qualityReport: DataQualityReport;
   onUpdateDashboard?: (updated: GeneratedDashboard) => void;
 }
@@ -63,6 +65,7 @@ export default function DashboardVisualizer({
   projectId,
   projectName,
   dashboard,
+  dataset,
   qualityReport,
   onUpdateDashboard,
 }: DashboardVisualizerProps) {
@@ -122,6 +125,20 @@ export default function DashboardVisualizer({
   const [isSavingLocal, setIsSavingLocal] = useState(false);
   const [localSavedPath, setLocalSavedPath] = useState<string | null>(null);
 
+  const triggerBlobDownload = (blob: Blob, filename: string) => {
+    const blobUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.style.display = "none";
+    link.href = blobUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => {
+      window.URL.revokeObjectURL(blobUrl);
+    }, 5000);
+  };
+
   const handleSaveLocal = async () => {
     setIsSavingLocal(true);
     setExportError(null);
@@ -129,17 +146,39 @@ export default function DashboardVisualizer({
       const res = await fetch("/api/export/save-local", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId, openExplorer: true }),
+        body: JSON.stringify({
+          projectId,
+          projectName,
+          projectData: dataset && dashboard ? {
+            id: projectId,
+            name: projectName,
+            dashboard,
+            dataset,
+          } : undefined,
+          openExplorer: true,
+        }),
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
         throw new Error(data.error || "Failed to save locally");
       }
+
+      if (data.isServerless) {
+        setExportStatus("Cloud deployment active: Saving complete Power BI project directly to your Downloads folder...");
+        await handleDownloadPowerBi("zip");
+        return;
+      }
+
       setLocalSavedPath(data.folderPath);
       setExportStatus(`Saved directly to: ${data.folderPath}! Opened in Windows Explorer.`);
     } catch (err: any) {
-      console.error("Save local error:", err);
-      setExportError(err.message || "Failed to save locally");
+      console.warn("Save local fallback to browser download:", err);
+      try {
+        await handleDownloadPowerBi("zip");
+        setExportStatus("Power BI Project zip bundle downloaded directly to your Downloads folder!");
+      } catch (fallbackErr: any) {
+        setExportError(fallbackErr.message || err.message || "Failed to save locally");
+      }
     } finally {
       setIsSavingLocal(false);
     }
@@ -166,6 +205,74 @@ export default function DashboardVisualizer({
         .trim()
         .replace(/\s+/g, "_") || "MetricWeave_Report";
 
+      // 1. Direct client-side generation if dataset & dashboard exist in React state
+      if (dataset && dashboard) {
+        if (format === "pbip") {
+          const pbipDescriptor = {
+            version: "1.0",
+            artifacts: [
+              {
+                report: {
+                  path: `${cleanName}.Report`,
+                },
+              },
+            ],
+            settings: {
+              enableAutoRecovery: true,
+            },
+          };
+          const blob = new Blob([JSON.stringify(pbipDescriptor, null, 2)], {
+            type: "application/json",
+          });
+          triggerBlobDownload(blob, `${cleanName}.pbip`);
+          setExportStatus(`Saved "${cleanName}.pbip" to your Downloads!`);
+          return;
+        }
+
+        const bundle = await createPowerBiZipBundle(cleanName, dashboard, dataset);
+
+        if (format === "zip") {
+          const blob = bundle.zipBlob || new Blob([bundle.zipBuffer], { type: "application/zip" });
+          const fname = `${cleanName}_PowerBI_Project.zip`;
+          triggerBlobDownload(blob, fname);
+          setExportStatus(`Saved "${fname}" to your Downloads! Extract or open in Power BI Desktop.`);
+          return;
+        }
+
+        if (format === "bim") {
+          const blob = new Blob([bundle.modelBim], { type: "application/json" });
+          const fname = `${cleanName}_model.bim`;
+          triggerBlobDownload(blob, fname);
+          setExportStatus(`Saved "${fname}" to your Downloads!`);
+          return;
+        }
+
+        if (format === "dax") {
+          const blob = new Blob([bundle.daxScript], { type: "text/plain;charset=utf-8" });
+          const fname = `${cleanName}_measures.dax`;
+          triggerBlobDownload(blob, fname);
+          setExportStatus(`Saved "${fname}" to your Downloads!`);
+          return;
+        }
+
+        if (format === "m") {
+          const blob = new Blob([bundle.powerQueryM], { type: "text/plain;charset=utf-8" });
+          const fname = `${cleanName}_transform.m`;
+          triggerBlobDownload(blob, fname);
+          setExportStatus(`Saved "${fname}" to your Downloads!`);
+          return;
+        }
+
+        if (format === "csv") {
+          const blob = new Blob([bundle.cleanedCsv], { type: "text/csv;charset=utf-8" });
+          const fname = `${cleanName}_dataset.csv`;
+          triggerBlobDownload(blob, fname);
+          setExportStatus(`Saved "${fname}" to your Downloads!`);
+          return;
+        }
+      }
+
+      // 2. Server API fallback
       let defaultFilename = `${cleanName}_PowerBI_Project.zip`;
       if (format === "pbip") defaultFilename = `${cleanName}.pbip`;
       else if (format === "bim") defaultFilename = `${cleanName}_model.bim`;
@@ -179,52 +286,9 @@ export default function DashboardVisualizer({
         throw new Error(errJson?.error || `Export failed with HTTP ${res.status}`);
       }
 
-      let filename = defaultFilename;
-      const disposition = res.headers.get("content-disposition");
-      if (disposition) {
-        const utfMatch = disposition.match(/filename\*=UTF-8''([^;\s]+)/i);
-        if (utfMatch && utfMatch[1]) {
-          filename = decodeURIComponent(utfMatch[1]);
-        } else {
-          const normalMatch = disposition.match(/filename="?([^";]+)"?/i);
-          if (normalMatch && normalMatch[1]) {
-            filename = normalMatch[1].trim();
-          }
-        }
-      }
-
-      const expectedExt =
-        format === "zip"
-          ? ".zip"
-          : format === "pbip"
-          ? ".pbip"
-          : format === "bim"
-          ? ".bim"
-          : format === "dax"
-          ? ".dax"
-          : format === "csv"
-          ? ".csv"
-          : ".m";
-
-      if (!filename.toLowerCase().endsWith(expectedExt)) {
-        filename = `${filename}${expectedExt}`;
-      }
-
       const blob = await res.blob();
-      const blobUrl = window.URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.style.display = "none";
-      link.href = blobUrl;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-
-      setTimeout(() => {
-        window.URL.revokeObjectURL(blobUrl);
-      }, 3000);
-
-      setExportStatus(`Saved "${filename}" to your device! Extract or open in Power BI Desktop to edit manually.`);
+      triggerBlobDownload(blob, defaultFilename);
+      setExportStatus(`Saved "${defaultFilename}" to your device!`);
     } catch (err: any) {
       console.error("Power BI download failed:", err);
       setExportError(err.message || "Failed to download Power BI export package.");
@@ -852,21 +916,19 @@ export default function DashboardVisualizer({
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
                 <button
                   id="download-pbip-btn"
-                  onClick={() => handleDownloadPowerBi("zip")}
+                  onClick={() => handleDownloadPowerBi("pbip")}
                   className="p-2.5 rounded-lg border border-border bg-card hover:border-amber-500/50 hover:bg-amber-500/5 transition-all flex flex-col items-start gap-1 text-left cursor-pointer"
                 >
                   <div className="flex items-center gap-1.5 font-bold text-foreground">
                     <FileCode className="size-3 text-amber-500" />
                     <span>.pbip Project</span>
                   </div>
-                  <span className="text-[10px] text-muted-foreground">Complete project package</span>
+                  <span className="text-[10px] text-muted-foreground">Power BI descriptor</span>
                 </button>
 
-                <a
+                <button
                   id="download-bim-btn"
-                  href={`/api/export/powerbi/${encodeURIComponent(bimFilename)}?projectId=${encodeURIComponent(projectId)}&format=bim`}
-                  download={bimFilename}
-                  onClick={() => setExportStatus(`Downloading "${bimFilename}" to your device!`)}
+                  onClick={() => handleDownloadPowerBi("bim")}
                   className="p-2.5 rounded-lg border border-border bg-card hover:border-blue-500/50 hover:bg-blue-500/5 transition-all flex flex-col items-start gap-1 text-left cursor-pointer"
                 >
                   <div className="flex items-center gap-1.5 font-bold text-foreground">
@@ -874,13 +936,11 @@ export default function DashboardVisualizer({
                     <span>model.bim</span>
                   </div>
                   <span className="text-[10px] text-muted-foreground">TMSL Semantic Model</span>
-                </a>
+                </button>
 
-                <a
+                <button
                   id="download-dax-btn"
-                  href={`/api/export/powerbi/${encodeURIComponent(daxFilename)}?projectId=${encodeURIComponent(projectId)}&format=dax`}
-                  download={daxFilename}
-                  onClick={() => setExportStatus(`Downloading "${daxFilename}" to your device!`)}
+                  onClick={() => handleDownloadPowerBi("dax")}
                   className="p-2.5 rounded-lg border border-border bg-card hover:border-purple-500/50 hover:bg-purple-500/5 transition-all flex flex-col items-start gap-1 text-left cursor-pointer"
                 >
                   <div className="flex items-center gap-1.5 font-bold text-foreground">
@@ -888,13 +948,11 @@ export default function DashboardVisualizer({
                     <span>measures.dax</span>
                   </div>
                   <span className="text-[10px] text-muted-foreground">DAX KPI Formulas</span>
-                </a>
+                </button>
 
-                <a
+                <button
                   id="download-m-btn"
-                  href={`/api/export/powerbi/${encodeURIComponent(mFilename)}?projectId=${encodeURIComponent(projectId)}&format=m`}
-                  download={mFilename}
-                  onClick={() => setExportStatus(`Downloading "${mFilename}" to your device!`)}
+                  onClick={() => handleDownloadPowerBi("m")}
                   className="p-2.5 rounded-lg border border-border bg-card hover:border-indigo-500/50 hover:bg-indigo-500/5 transition-all flex flex-col items-start gap-1 text-left cursor-pointer"
                 >
                   <div className="flex items-center gap-1.5 font-bold text-foreground">
@@ -902,13 +960,11 @@ export default function DashboardVisualizer({
                     <span>transform.m</span>
                   </div>
                   <span className="text-[10px] text-muted-foreground">Power Query script</span>
-                </a>
+                </button>
 
-                <a
+                <button
                   id="download-csv-btn"
-                  href={`/api/export/powerbi/${encodeURIComponent(csvFilename)}?projectId=${encodeURIComponent(projectId)}&format=csv`}
-                  download={csvFilename}
-                  onClick={() => setExportStatus(`Downloading "${csvFilename}" to your device!`)}
+                  onClick={() => handleDownloadPowerBi("csv")}
                   className="p-2.5 rounded-lg border border-border bg-card hover:border-emerald-500/50 hover:bg-emerald-500/5 transition-all flex flex-col items-start gap-1 text-left cursor-pointer"
                 >
                   <div className="flex items-center gap-1.5 font-bold text-foreground">
@@ -916,7 +972,7 @@ export default function DashboardVisualizer({
                     <span>dataset.csv</span>
                   </div>
                   <span className="text-[10px] text-muted-foreground">Cleaned data table</span>
-                </a>
+                </button>
               </div>
             </div>
 
